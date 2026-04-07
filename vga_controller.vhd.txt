@@ -1,0 +1,136 @@
+-- =============================================================================
+-- vga_controller.vhd
+-- VGA 640x480 @ 60 Hz — pixel clock 25 MHz
+-- Lee frame buffer 160x120 y escala 4x4 a pantalla completa
+-- Salida: vga_r/g/b de 4 bits para DAC resistivo
+-- =============================================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity vga_controller is
+    port (
+        clk_25  : in  std_logic;
+        rst     : in  std_logic;
+        fb_addr : out std_logic_vector(14 downto 0);   -- 15 bits para 160x120
+        fb_data : in  std_logic_vector(15 downto 0);
+        vga_hs  : out std_logic;
+        vga_vs  : out std_logic;
+        vga_r   : out std_logic_vector(3 downto 0);
+        vga_g   : out std_logic_vector(3 downto 0);
+        vga_b   : out std_logic_vector(3 downto 0)
+    );
+end vga_controller;
+
+architecture rtl of vga_controller is
+
+    -- Parametros VGA 640x480 @ 60 Hz, pixel clock 25 MHz
+    constant H_DISP  : integer := 640;
+    constant H_FP    : integer := 16;
+    constant H_SYNC  : integer := 96;
+    constant H_BP    : integer := 48;
+    constant H_TOTAL : integer := 800;	 
+
+    constant V_DISP  : integer := 480;
+    constant V_FP    : integer := 10;
+    constant V_SYNC  : integer := 2;
+    constant V_BP    : integer := 33;
+    constant V_TOTAL : integer := 525;
+	 
+    -- Frame buffer: 160x120, escala 4x en cada dimension
+    constant FB_W    : integer := 160;
+    constant FB_H    : integer := 120;	 
+	 
+    signal h_cnt     : integer range 0 to H_TOTAL-1 := 0;
+    signal v_cnt     : integer range 0 to V_TOTAL-1 := 0;
+
+    signal visible   : std_logic;
+    signal visible_d : std_logic;	
+
+    -- Coordenadas dentro del area activa (0..639, 0..479)
+    signal px_x      : integer range 0 to H_DISP-1 := 0;
+    signal px_y      : integer range 0 to V_DISP-1 := 0;
+
+    -- Coordenadas en frame buffer (0..159, 0..119)
+    signal fb_x      : integer range 0 to FB_W-1 := 0;
+    signal fb_y      : integer range 0 to FB_H-1 := 0;
+
+    signal addr_int  : unsigned(14 downto 0);
+
+begin
+
+    -- -------------------------------------------------------------------------
+    -- Contadores de sincronismo
+    -- -------------------------------------------------------------------------
+    process(clk_25)
+    begin
+        if rising_edge(clk_25) then
+            if rst = '1' then
+                h_cnt <= 0;
+                v_cnt <= 0;
+            else
+                if h_cnt = H_TOTAL-1 then
+                    h_cnt <= 0;
+                    if v_cnt = V_TOTAL-1 then
+                        v_cnt <= 0;
+                    else
+                        v_cnt <= v_cnt + 1;
+                    end if;					 
+                else
+                    h_cnt <= h_cnt + 1;
+                end if;
+            end if;
+        end if;
+    end process;					 
+					 
+    -- -------------------------------------------------------------------------
+    -- Pulsos de sincronismo (activo bajo)
+    -- -------------------------------------------------------------------------
+    vga_hs <= '0' when (h_cnt >= H_DISP + H_FP) and (h_cnt < H_DISP + H_FP + H_SYNC)
+              else '1';
+    vga_vs <= '0' when (v_cnt >= V_DISP + V_FP) and (v_cnt < V_DISP + V_FP + V_SYNC)
+              else '1';
+
+    -- -------------------------------------------------------------------------
+    -- Zona visible
+    -- -------------------------------------------------------------------------
+    visible <= '1' when (h_cnt < H_DISP) and (v_cnt < V_DISP) else '0';
+
+    -- Coordenadas en zona activa
+    px_x <= h_cnt when h_cnt < H_DISP else 0;
+    px_y <= v_cnt when v_cnt < V_DISP else 0;
+
+    -- Mapeo 640x480 →
+    fb_x <= px_x / 4;
+    fb_y <= px_y / 4;
+
+    -- Direccion al frame buffer
+    addr_int <= to_unsigned(fb_y * FB_W + fb_x, 15);
+    fb_addr  <= std_logic_vector(addr_int);
+
+    -- -------------------------------------------------------------------------
+    -- Pipeline 1 ciclo para compensar latencia del BRAM
+    -- -------------------------------------------------------------------------
+    process(clk_25)
+    begin
+        if rising_edge(clk_25) then
+            visible_d <= visible;
+        end if;
+    end process;
+
+    -- -------------------------------------------------------------------------
+    -- Salida RGB: RGB565 → 4 bits por canal
+    -- RGB565 layout: [15:11]=R5  [10:5]=G6  [4:0]=B5
+    -- Tomamos los 4 MSB de cada canal
+    -- -------------------------------------------------------------------------
+    vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
+    vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
+    vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
+
+end rtl;	
+
+
+
+
+	

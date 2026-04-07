@@ -1,0 +1,51 @@
+-- =============================================================================
+-- frame_buffer.vhd
+-- Frame buffer dual-port en BRAM — 160x120 RGB565
+-- Pixels: 160*120 = 19200  →  19 RAMB16BWER  (LX9 tiene 32, cabe bien)
+-- Direccion: 15 bits (0..19199)
+-- Puerto A escritura (dominio PCLK), Puerto B lectura (dominio clk_25)
+-- =============================================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity frame_buffer is
+    port (
+        wr_clk  : in  std_logic;
+        wr_en   : in  std_logic;
+        wr_addr : in  std_logic_vector(14 downto 0);   -- 15 bits: 0..19199
+        wr_data : in  std_logic_vector(15 downto 0);   -- RGB565
+        rd_clk  : in  std_logic;
+        rd_addr : in  std_logic_vector(14 downto 0);   -- 15 bits
+        rd_data : out std_logic_vector(15 downto 0)
+    );
+end frame_buffer;
+
+architecture rtl of frame_buffer is
+
+    type ram_t is array (0 to 19199) of std_logic_vector(15 downto 0);
+    shared variable ram : ram_t := (others => (others => '0'));
+
+    attribute ram_style        : string;
+    attribute ram_style of ram : variable is "block";
+
+begin
+
+    process(wr_clk)
+    begin
+        if rising_edge(wr_clk) then
+            if wr_en = '1' then
+                ram(to_integer(unsigned(wr_addr))) := wr_data;
+            end if;
+        end if;
+    end process;
+	 
+    process(rd_clk)
+    begin
+        if rising_edge(rd_clk) then
+            rd_data <= ram(to_integer(unsigned(rd_addr)));
+        end if;
+    end process;
+
+end rtl;	 

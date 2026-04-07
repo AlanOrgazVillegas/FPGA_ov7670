@@ -1,0 +1,76 @@
+-- =============================================================================
+-- clk_gen.vhd
+-- Un solo DCM_SP genera ambos clocks desde 50 MHz:
+--   CLKFX  = 50 * 12 / 25 = 24 MHz  → XCLK camara
+--   CLKDV  = 50 / 2        = 25 MHz  → VGA pixel clock
+--
+-- CLKDV requiere CLK_FEEDBACK = "1X" con CLK0 realimentado.
+-- CLKFX no depende del feedback y funciona en paralelo.
+-- Spartan 6 DCM_SP: CLKFX_MULTIPLY entre 2 y 32, CLKFX_DIVIDE entre 1 y 32.
+-- =============================================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+library unisim;
+use unisim.vcomponents.all;
+
+entity clk_gen is
+    port (
+        clk_50  : in  std_logic;
+        rst     : in  std_logic;
+        clk_24  : out std_logic;   -- 24 MHz → XCLK camara
+        clk_25  : out std_logic;   -- 25 MHz → VGA
+        locked  : out std_logic
+    );
+end clk_gen;
+
+architecture rtl of clk_gen is
+
+    signal clk0_buf     : std_logic;   -- CLK0 para feedback
+    signal clkfx_buf    : std_logic;   -- 24 MHz sin buffer
+    signal clkdv_buf    : std_logic;   -- 25 MHz sin buffer
+    signal clkfb        : std_logic;   -- feedback interno
+
+begin
+
+    DCM_INST : DCM_SP
+        generic map (
+            CLKDV_DIVIDE        => 2.0,        -- CLKDV = 50/2 = 25 MHz
+            CLKFX_MULTIPLY      => 12,         -- CLKFX = 50 * 12/25 = 24 MHz
+            CLKFX_DIVIDE        => 25,
+            CLKIN_DIVIDE_BY_2   => FALSE,
+            CLKIN_PERIOD        => 20.0,       -- 50 MHz = 20 ns
+            CLK_FEEDBACK        => "1X",       -- necesario para CLKDV
+            CLKOUT_PHASE_SHIFT  => "NONE",
+            DESKEW_ADJUST       => "SYSTEM_SYNCHRONOUS",
+            PHASE_SHIFT         => 0,
+            STARTUP_WAIT        => FALSE
+        )				
+        port map (
+            CLKIN    => clk_50,
+            CLKFB    => clkfb,         -- feedback de CLK0
+            RST      => rst,
+            PSEN     => '0',
+            PSINCDEC => '0',
+            PSCLK    => '0',
+            DSSEN    => '0',				
+            CLK0     => clk0_buf,      -- 50 MHz, usado solo para feedback
+            CLK90    => open,
+            CLK180   => open,
+            CLK270   => open,				
+            CLK2X    => open,
+            CLK2X180 => open,
+            CLKDV    => clkdv_buf,     -- 25 MHz
+            CLKFX    => clkfx_buf,     -- 24 MHz	
+            CLKFX180 => open,
+            LOCKED   => locked,
+            PSDONE   => open,
+            STATUS   => open
+        );
+
+    -- Feedback: CLK0 → BUFG → CLKFB (requerido para CLKDV)
+    BUFG_FB  : BUFG port map (I => clk0_buf,  O => clkfb);
+    BUFG_FX  : BUFG port map (I => clkfx_buf, O => clk_24);
+    BUFG_DV  : BUFG port map (I => clkdv_buf, O => clk_25);
+
+end rtl;		  

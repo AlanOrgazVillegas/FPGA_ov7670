@@ -1,0 +1,222 @@
+-- =============================================================================
+-- top_module.vhd
+-- OV7670 → Frame Buffer 160x120 RGB565 (BRAM) → VGA 640x480
+-- FPGA: Xilinx Spartan 6 XC6SLX9 TQG144 - Oscilador 50 MHz en P21
+-- Reset automatico desde PLL locked
+-- =============================================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+library unisim;
+use unisim.vcomponents.all;
+
+entity top_module is
+    port (
+        clk_50      : in    std_logic;
+        -- VGA
+        vga_hs      : out   std_logic;
+        vga_vs      : out   std_logic;	 
+        vga_r       : out   std_logic_vector(3 downto 0);
+        vga_g       : out   std_logic_vector(3 downto 0);
+        vga_b       : out   std_logic_vector(3 downto 0);
+        -- Camara OV7670
+        cam_xclk    : out   std_logic;
+        cam_pclk    : in    std_logic;
+        cam_vsync   : in    std_logic;
+        cam_href    : in    std_logic;	
+        cam_sda     : inout std_logic;
+        cam_scl     : out   std_logic;
+        cam_reset   : out   std_logic;
+        cam_d       : in    std_logic_vector(7 downto 0)
+    );
+end top_module;
+
+architecture rtl of top_module is
+
+    component clk_gen is
+        port (	
+            clk_50  : in  std_logic;
+            rst     : in  std_logic;
+            clk_24  : out std_logic;
+            clk_25  : out std_logic;
+            locked  : out std_logic
+        );
+    end component;
+
+    component sccb_master is
+        port (
+            clk     : in    std_logic;
+            rst     : in    std_logic;
+            start   : in    std_logic;
+            addr    : in    std_logic_vector(7 downto 0);
+            data    : in    std_logic_vector(7 downto 0);
+            done    : out   std_logic;
+            sio_c   : out   std_logic;
+            sio_d   : inout std_logic
+        );
+    end component;
+
+    component ov7670_regs is
+        port (
+            clk         : in  std_logic;
+            rst         : in  std_logic;
+            sccb_start  : out std_logic;
+            sccb_addr   : out std_logic_vector(7 downto 0);
+            sccb_data   : out std_logic_vector(7 downto 0);
+            sccb_done   : in  std_logic;
+            config_done : out std_logic
+        );
+    end component;
+
+    component cam_capture is
+        port (
+            pclk        : in  std_logic;
+            vsync       : in  std_logic;
+            href        : in  std_logic;
+            d           : in  std_logic_vector(7 downto 0);
+            wr_clk      : out std_logic;
+            wr_en       : out std_logic;
+            wr_addr     : out std_logic_vector(14 downto 0);
+            wr_data     : out std_logic_vector(15 downto 0);
+            frame_done  : out std_logic
+        );	 
+    end component;
+
+    component frame_buffer is	 
+        port (
+            wr_clk  : in  std_logic;
+            wr_en   : in  std_logic;
+            wr_addr : in  std_logic_vector(14 downto 0);
+            wr_data : in  std_logic_vector(15 downto 0);
+            rd_clk  : in  std_logic;
+            rd_addr : in  std_logic_vector(14 downto 0);
+            rd_data : out std_logic_vector(15 downto 0)
+        );
+    end component;
+
+    component vga_controller is
+        port (
+            clk_25  : in  std_logic;
+            rst     : in  std_logic;
+            fb_addr : out std_logic_vector(14 downto 0);
+            fb_data : in  std_logic_vector(15 downto 0);
+            vga_hs  : out std_logic;	 
+            vga_vs  : out std_logic;
+            vga_r   : out std_logic_vector(3 downto 0);
+            vga_g   : out std_logic_vector(3 downto 0);
+            vga_b   : out std_logic_vector(3 downto 0)
+        );
+    end component;
+
+    -- Clocks y reset
+    signal clk_24       : std_logic;
+    signal clk_25       : std_logic;
+    signal pll_locked   : std_logic;
+    signal rst          : std_logic;
+    signal rst_sr       : std_logic_vector(3 downto 0) := (others => '1');
+
+    -- SCCB
+    signal sccb_start   : std_logic;
+    signal sccb_addr    : std_logic_vector(7 downto 0);
+    signal sccb_data    : std_logic_vector(7 downto 0);
+    signal sccb_done    : std_logic;
+    signal config_done  : std_logic;	
+
+   -- Frame buffer (15 bits de direccion para 160x120)
+    signal fb_wr_clk    : std_logic;
+    signal fb_wr_en     : std_logic;
+    signal fb_wr_addr   : std_logic_vector(14 downto 0);
+    signal fb_wr_data   : std_logic_vector(15 downto 0);
+    signal fb_rd_addr   : std_logic_vector(14 downto 0);
+    signal fb_rd_data   : std_logic_vector(15 downto 0);
+    signal frame_done   : std_logic;
+	 
+begin
+
+    cam_reset <= '1';   -- reset de la cámara inactivo (activo bajo)
+    -- cam_xclk se genera mediante ODDR2 (ver más abajo)	 
+	 
+    -- Reset automatico: activo mientras PLL no esta bloqueado
+    process(clk_50)
+    begin	 
+        if rising_edge(clk_50) then
+            if pll_locked = '0' then
+                rst_sr <= (others => '1');	 
+            else	 
+                rst_sr <= rst_sr(2 downto 0) & '0';
+            end if;
+        end if;
+    end process;
+    rst <= rst_sr(3);	 
+	 
+    U_CLK : clk_gen
+        port map (clk_50 => clk_50, rst => '0',
+                  clk_24 => clk_24, clk_25 => clk_25, locked => pll_locked);	 
+	 
+    U_SCCB : sccb_master
+        port map (clk => clk_24, rst => rst,
+                  start => sccb_start, addr => sccb_addr, data => sccb_data,
+                  done => sccb_done, sio_c => cam_scl, sio_d => cam_sda);	 
+	 
+	 
+    U_REGS : ov7670_regs
+        port map (clk => clk_24, rst => rst,
+                  sccb_start => sccb_start, sccb_addr => sccb_addr,
+                  sccb_data => sccb_data, sccb_done => sccb_done,
+                  config_done => config_done);	 	 
+	 
+	 
+    U_CAP : cam_capture
+        port map (pclk => cam_pclk, vsync => cam_vsync,
+                  href => cam_href, d => cam_d,
+                  wr_clk => fb_wr_clk, wr_en => fb_wr_en,
+                  wr_addr => fb_wr_addr, wr_data => fb_wr_data,
+                  frame_done => frame_done);	 
+	 
+	 
+    U_FB : frame_buffer
+        port map (wr_clk => fb_wr_clk, wr_en => fb_wr_en,
+                  wr_addr => fb_wr_addr, wr_data => fb_wr_data,
+                  rd_clk => clk_25, rd_addr => fb_rd_addr, rd_data => fb_rd_data);
+
+
+    U_VGA : vga_controller
+        port map (clk_25 => clk_25, rst => rst,
+                  fb_addr => fb_rd_addr, fb_data => fb_rd_data,
+                  vga_hs => vga_hs, vga_vs => vga_vs,
+                  vga_r => vga_r, vga_g => vga_g, vga_b => vga_b);
+
+
+    -- =========================================================================
+    -- Clock forwarding para cam_xclk (24 MHz) usando ODDR2
+    -- Evita el error de enrutamiento global (Place:1205)
+    -- =========================================================================
+    oddr_xclk : ODDR2
+        generic map (
+            DDR_ALIGNMENT => "NONE",   -- No se requiere alineación
+            INIT          => '0',
+            SRTYPE        => "SYNC"
+        )
+        port map (
+            Q  => cam_xclk,            -- Salida al pin de la FPGA
+            C0 => clk_24,              -- Reloj positivo (24 MHz)
+            C1 => not clk_24,          -- Reloj negativo
+            CE => '1',                 -- Habilitado siempre
+            D0 => '1',                 -- Cuando C0 activo, Q = '1'
+            D1 => '0',                 -- Cuando C1 activo, Q = '0'
+            R  => '0',
+            S  => '0'
+        );
+
+end rtl;
+
+
+
+
+
+						
+		  

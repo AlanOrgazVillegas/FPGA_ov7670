@@ -1,0 +1,120 @@
+-- =============================================================================
+-- cam_capture.vhd
+-- Captura OV7670 en modo QVGA (320x240) y submuestrea a 160x120
+-- guardando 1 de cada 2 pixeles en X y 1 de cada 2 lineas en Y.
+-- Resultado: frame buffer 160x120 RGB565, 19 BRAMs, cabe en Spartan 6 LX9.
+--
+-- Protocolo OV7670:
+--   VSYNC alto = inicio de frame (pulso activo alto)
+--   HREF  alto = fila valida
+--   PCLK       = clock de pixel
+--   D[7:0]     = primer byte en primer PCLK, segundo byte en segundo PCLK
+-- =============================================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity cam_capture is
+    port (
+        pclk        : in  std_logic;
+        vsync       : in  std_logic;
+        href        : in  std_logic;
+        d           : in  std_logic_vector(7 downto 0);
+        -- Frame buffer write port
+        wr_clk      : out std_logic;
+        wr_en       : out std_logic;
+        wr_addr     : out std_logic_vector(14 downto 0);  -- 15 bits, 0..19199
+        wr_data     : out std_logic_vector(15 downto 0);
+        frame_done  : out std_logic
+    );
+end cam_capture;
+
+architecture rtl of cam_capture is
+
+    signal byte_sel     : std_logic := '0';
+    signal pixel_hi     : std_logic_vector(7 downto 0) := (others => '0');
+	 
+    -- Contadores en espacio QVGA 320x240
+    signal col          : unsigned(8 downto 0) := (others => '0');  -- 0..319
+    signal row          : unsigned(7 downto 0) := (others => '0');  -- 0..239
+
+    -- Direccion en frame buffer 160x120
+    signal px_addr      : unsigned(14 downto 0) := (others => '0');
+
+    signal vsync_prev   : std_logic := '0';
+    signal href_prev    : std_logic := '0';
+
+    signal we           : std_logic := '0';
+    signal wdata        : std_logic_vector(15 downto 0) := (others => '0');
+    signal fd           : std_logic := '0';
+
+    -- Submuestre: guardar pixel solo si col par y row par
+    signal col_even     : std_logic;
+    signal row_even     : std_logic;
+
+begin
+
+    wr_clk  <= pclk;
+    wr_en   <= we;
+    wr_addr <= std_logic_vector(px_addr);
+    wr_data <= wdata;
+    frame_done <= fd;
+
+    col_even <= '1' when col(0) = '0' else '0';  -- columnas pares
+    row_even <= '1' when row(0) = '0' else '0';  -- filas pares
+
+    process(pclk)
+    begin
+        if rising_edge(pclk) then
+            we         <= '0';
+            fd         <= '0';
+            vsync_prev <= vsync;
+            href_prev  <= href;
+
+            -- Flanco subida VSYNC: nuevo frame
+            if vsync = '1' and vsync_prev = '0' then
+                col      <= (others => '0');
+                row      <= (others => '0');
+                px_addr  <= (others => '0');
+                byte_sel <= '0';
+                fd       <= '1';
+            end if;
+
+            -- Flanco bajada HREF: fin de linea, incrementar fila
+            if href = '0' and href_prev = '1' then
+                col      <= (others => '0');
+                byte_sel <= '0';
+                if row < 239 then
+                    row <= row + 1;
+                end if;
+            end if;
+
+            -- Captura de pixeles durante HREF activo
+            if href = '1' and vsync = '0' then
+                if byte_sel = '0' then
+                    pixel_hi <= d;
+                    byte_sel <= '1';
+                else
+                    -- Pixel completo listo
+                    byte_sel <= '0';
+                    -- Submuestre 2x2: guardar solo col par y row par
+                    if col_even = '1' and row_even = '1' then
+                        wdata   <= pixel_hi & d;
+                        we      <= '1';
+                        if px_addr < 19199 then
+                            px_addr <= px_addr + 1;
+                        end if;
+                    end if;
+                    -- Avanzar columna siempre
+                    if col < 319 then
+                        col <= col + 1;
+                    end if;
+                end if;
+            end if;
+
+        end if;
+    end process;
+
+end rtl;								
+						  
