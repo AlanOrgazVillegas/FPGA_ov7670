@@ -124,9 +124,18 @@ begin
     -- RGB565 layout: [15:11]=R5  [10:5]=G6  [4:0]=B5
     -- Tomamos los 4 MSB de cada canal
     -- -------------------------------------------------------------------------
-    vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
-    vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
-    vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
+
+	 --vga_r <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
+	 --vga_g <= fb_data(10 downto 7) when visible_d = '1' else (others => '0');
+	 --vga_b <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');	
+
+--vga_r <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
+--vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
+--vga_b <= fb_data(15 downto 12) when visible_d = '1' else (others => '0'); 
+
+vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
+vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
+vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
 
 end rtl;	
 

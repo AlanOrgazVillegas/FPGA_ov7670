@@ -1,93 +1,88 @@
 -- =============================================================================
 -- ov7670_regs.vhd
--- Secuenciador de registros para OV7670
--- Envia todos los registros de configuracion al arranque usando sccb_master
--- Modo: RGB565, 320x240 (QVGA), 30fps
+-- Registros de configuracion OV7670 basados en el repositorio de referencia
+-- que funciona correctamente. Incluye registros criticos:
+--   0x15 = 0x20 : PCLK no oscila durante blanking (elimina ruido)
+--   0x3A = 0x04 : TSLB orden de bytes RGB correcto (critico para color)
+--   0xB0 = 0x84 : Requerido para color correcto
 -- =============================================================================
+
+
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 entity ov7670_regs is
     port (
-        clk         : in  std_logic;   -- 24 MHz
+        clk         : in  std_logic;
         rst         : in  std_logic;
-        -- Interface con sccb_master
         sccb_start  : out std_logic;
         sccb_addr   : out std_logic_vector(7 downto 0);
         sccb_data   : out std_logic_vector(7 downto 0);
         sccb_done   : in  std_logic;
-        -- Configuracion completa
         config_done : out std_logic
     );
 end ov7670_regs;
 
-architecture rtl of ov7670_regs is
 
-    -- Tabla de registros: (address, value)
-    -- 0xFF = fin de tabla
-    -- 0xFE = delay (espera ~1ms)
+architecture rtl of ov7670_regs is
+ 
     type reg_entry_t is record
         addr : std_logic_vector(7 downto 0);
         val  : std_logic_vector(7 downto 0);
     end record;
-	 
-    type reg_table_t is array (natural range <>) of reg_entry_t;
 
+
+    type reg_table_t is array (natural range <>) of reg_entry_t;
+ 
     constant REG_TABLE : reg_table_t := (
-        -- Reset total
-        (x"12", x"80"),   -- COM7: reset
-        (x"FE", x"00"),   -- delay ~1ms
-        -- Configuracion base RGB565 QVGA
+        -- Reset total y delay
+        (x"12", x"80"),   -- COM7: software reset
+        (x"FE", x"00"),   -- delay 1ms
+        -- Formato de salida RGB565
         (x"12", x"04"),   -- COM7: RGB output
-        (x"11", x"00"),   -- CLKRC: no prescaler (PCLK = XCLK/2 con PLL interno)
-        (x"0C", x"00"),   -- COM3: sin zoom
-        (x"3E", x"00"),   -- COM14: no PCLK scaling
-        -- Escalar a QVGA 320x240 desde VGA 640x480
+        (x"15", x"20"),   -- PCLK no oscila durante blanking (CRITICO anti-ruido)
+        (x"40", x"D0"),   -- COM15: RGB565 full range
+        (x"3A", x"04"),   -- TSLB: orden de bytes correcto (CRITICO para color)
+        -- Control de clock
+        (x"11", x"80"),   -- CLKRC: PLL interno
+        (x"0C", x"00"),   -- COM3: default
+        (x"3E", x"00"),   -- COM14: no scaling, PCLK normal
+        (x"04", x"00"),   -- COM1: deshabilitar CCIR656
+        -- Timing de ventana QVGA
+        (x"17", x"14"),   -- HSTART
+        (x"18", x"02"),   -- HSTOP
+        (x"32", x"80"),   -- HREF edge offset
+        (x"19", x"03"),   -- VSTART
+        (x"1A", x"7B"),   -- VSTOP
+        (x"03", x"0A"),   -- VREF
+        (x"0F", x"41"),   -- COM6: reset timings
+        (x"1E", x"00"),   -- MVFP: sin mirror/flip
+        -- Escalado a QVGA
         (x"70", x"3A"),   -- SCALING_XSC
         (x"71", x"35"),   -- SCALING_YSC
-        (x"72", x"11"),   -- SCALING_DCWCTR: div 2 en X e Y
-        (x"73", x"F0"),   -- SCALING_PCLK_DIV: div 2
+        (x"72", x"11"),   -- SCALING_DCWCTR
+        (x"73", x"F0"),   -- SCALING_PCLK_DIV
         (x"A2", x"02"),   -- SCALING_PCLK_DELAY
-        -- Timing VGA → QVGA
-        (x"17", x"16"),   -- HSTART
-        (x"18", x"04"),   -- HSTOP
-        (x"19", x"02"),   -- VSTART
-        (x"1A", x"7A"),   -- VSTOP
-        (x"32", x"80"),   -- HREF
-        (x"03", x"0A"),   -- VREF
-        -- Formato RGB565
-        (x"40", x"D0"),   -- COM15: RGB565 full range
-        (x"8C", x"00"),   -- RGB444: deshabilitar RGB444
-        -- Control camara
-        (x"13", x"E0"),   -- COM8: AGC, AEC, AWB
-        (x"00", x"00"),   -- GAIN: auto
-        (x"10", x"00"),   -- AECH
-        (x"0D", x"40"),   -- COM4
-        (x"14", x"18"),   -- COM9: 4x ganancia maxima
-        (x"A5", x"05"),   -- BD50MAX
-        (x"AB", x"07"),   -- BD60MAX
-        (x"24", x"95"),   -- AEW
-        (x"25", x"33"),   -- AEB
-        (x"26", x"E3"),   -- VPT
-        (x"9F", x"78"),   -- HAECC1
-        (x"A0", x"68"),   -- HAECC2
-        (x"A1", x"03"),
-        (x"A6", x"D8"),   -- HAECC3
-        (x"A7", x"D8"),   -- HAECC4
-        (x"A8", x"F0"),   -- HAECC5
-        (x"A9", x"90"),   -- HAECC6
-        (x"AA", x"94"),   -- HAECC7
-        (x"13", x"E5"),   -- COM8: activar AEC fast mode
-        -- Matriz de color
-        (x"4F", x"80"),   -- MTX1
-        (x"50", x"80"),   -- MTX2
+        -- Registros magicos para color correcto
+        (x"33", x"0B"),   -- CHLF
+        (x"3C", x"78"),   -- COM12
+        (x"69", x"00"),   -- GFIX
+        (x"74", x"00"),   -- REG74
+        (x"B0", x"84"),   -- RSVD: requerido para buen color
+        (x"B1", x"0C"),   -- ABLC1
+        (x"B2", x"0E"),   -- RSVD
+        (x"B3", x"80"),   -- THL_ST
+        -- Matriz de color (del repo de referencia)
+        (x"4F", x"B3"),   -- MTX1
+        (x"50", x"B3"),   -- MTX2
         (x"51", x"00"),   -- MTX3
-        (x"52", x"22"),   -- MTX4
-        (x"53", x"5E"),   -- MTX5
-        (x"54", x"80"),   -- MTX6
+        (x"52", x"3D"),   -- MTX4
+        (x"53", x"A7"),   -- MTX5
+        (x"54", x"E4"),   -- MTX6
         (x"58", x"9E"),   -- MTXS
-        -- Corrección gamma
+        (x"3D", x"C0"),   -- COM13: gamma enable
+        -- Gamma
         (x"7A", x"20"),
         (x"7B", x"10"),
         (x"7C", x"1E"),
@@ -104,72 +99,47 @@ architecture rtl of ov7670_regs is
         (x"87", x"C4"),
         (x"88", x"D7"),
         (x"89", x"E8"),
-        -- AWB
-        (x"43", x"0A"),
-        (x"44", x"F0"),
-        (x"45", x"34"),
-        (x"46", x"58"),
-        (x"47", x"28"),
-        (x"48", x"3A"),
-        (x"59", x"88"),
-        (x"5A", x"88"),
-        (x"5B", x"44"),
-        (x"5C", x"67"),
-        (x"5D", x"49"),
-        (x"5E", x"0E"),
-        (x"6C", x"0A"),
-        (x"6D", x"55"),
-        (x"6E", x"11"),
-        (x"6F", x"9F"),
-        (x"6A", x"40"),   -- GFIX
-        (x"01", x"40"),   -- BLUE gain
-        (x"02", x"60"),   -- RED gain
-        -- DNL
-        (x"4B", x"09"),
-        -- Saturacion y contraste
-        (x"62", x"00"),
-        (x"63", x"00"),
-        (x"64", x"06"),
-        (x"65", x"00"),
-        (x"66", x"05"),
-        (x"94", x"04"),
-        (x"95", x"08"),
-        -- Edge enhancement
-        (x"55", x"00"),
-        (x"56", x"40"),
-        (x"57", x"80"),
-        -- COM13: Gamma, UV auto adjust
-        (x"3D", x"C0"),
-        -- Reduccion ruido (DSP)
-        (x"69", x"00"),
-        (x"09", x"00"),
-        -- Ultimo: reconfirmar formato
-        (x"12", x"04"),   -- COM7: RGB
-        (x"40", x"D0"),   -- COM15: RGB565
+        -- AGC/AEC
+        (x"13", x"E0"),   -- COM8: deshabilitar AGC/AEC
+        (x"00", x"00"),   -- GAIN
+        (x"10", x"00"),   -- AECH
+        (x"0D", x"40"),   -- COM4
+        (x"14", x"18"),   -- COM9: 4x gain
+        (x"A5", x"05"),   -- BD50MAX
+        (x"AB", x"07"),   -- BD60MAX
+        (x"24", x"95"),   -- AEW
+        (x"25", x"33"),   -- AEB
+        (x"26", x"E3"),   -- VPT
+        (x"9F", x"78"),   -- HAECC1
+        (x"A0", x"68"),   -- HAECC2
+        (x"A1", x"03"),
+        (x"A6", x"D8"),   -- HAECC3
+        (x"A7", x"D8"),   -- HAECC4
+        (x"A8", x"F0"),   -- HAECC5
+        (x"A9", x"90"),   -- HAECC6
+        (x"AA", x"94"),   -- HAECC7
+        (x"13", x"E5"),   -- COM8: habilitar AGC/AEC
+        -- Ganancia RGB (del repo)
+        (x"1E", x"23"),   -- Mirror image
+        (x"69", x"06"),   -- Ganancia RGB ajustada
         -- Fin de tabla
         (x"FF", x"FF")
     );
 
-    constant DELAY_CYCLES : integer := 24000;  -- ~1 ms a 24 MHz
-
-    signal idx          : integer range 0 to REG_TABLE'length-1 := 0;
-    signal delay_cnt    : integer range 0 to DELAY_CYCLES := 0;
-    signal state        : integer range 0 to 3 := 0;
-
-    -- 0: inicio
-    -- 1: esperar done baje
-    -- 2: delay post-reset
-    -- 3: hecho
-
-    signal start_pulse  : std_logic := '0';
+    constant DELAY_CYCLES : integer := 24000;  -- 1ms a 24MHz
+ 
+    signal idx        : integer range 0 to REG_TABLE'length-1 := 0;
+    signal delay_cnt  : integer range 0 to DELAY_CYCLES := 0;
+    signal state      : integer range 0 to 3 := 0;
+    signal start_pulse: std_logic := '0';
 
 begin
-
-    sccb_start <= start_pulse;
-    sccb_addr  <= REG_TABLE(idx).addr;
-    sccb_data  <= REG_TABLE(idx).val;
+ 
+    sccb_start  <= start_pulse;
+    sccb_addr   <= REG_TABLE(idx).addr;
+    sccb_data   <= REG_TABLE(idx).val;
     config_done <= '1' when state = 3 else '0';
-
+	 
     process(clk)
     begin
         if rising_edge(clk) then
@@ -178,45 +148,41 @@ begin
                 state       <= 0;
                 start_pulse <= '0';
                 delay_cnt   <= 0;
-
             else
                 start_pulse <= '0';
-
                 case state is
-                    -- ---------------------------------------------------------
-                    when 0 =>  -- Enviar registro actual
+                    when 0 =>
                         if REG_TABLE(idx).addr = x"FF" then
-                            state <= 3;  -- Fin de tabla
+                            state <= 3;
                         elsif REG_TABLE(idx).addr = x"FE" then
-                            -- Delay
                             delay_cnt <= DELAY_CYCLES;
                             state     <= 2;
                         else
                             start_pulse <= '1';
                             state       <= 1;
                         end if;
-                    -- ---------------------------------------------------------
-                    when 1 =>  -- Esperar que sccb_master termine
+                    when 1 =>
                         if sccb_done = '1' then
                             idx   <= idx + 1;
                             state <= 0;
                         end if;
-                    -- ---------------------------------------------------------
-                    when 2 =>  -- Delay
+                    when 2 =>
                         if delay_cnt = 0 then
                             idx   <= idx + 1;
                             state <= 0;
                         else
                             delay_cnt <= delay_cnt - 1;
                         end if;
-                    -- ---------------------------------------------------------
-                    when 3 => null;  -- Configuracion completa
-
+                    when 3 => null;
                     when others => state <= 0;
                 end case;
             end if;
         end if;
     end process;
+ 
+end rtl;
 
-end rtl;								
-								
+
+
+
+
