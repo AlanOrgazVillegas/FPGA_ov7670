@@ -7,7 +7,6 @@
 --   0xB0 = 0x84 : Requerido para color correcto
 -- =============================================================================
 
-
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -24,7 +23,6 @@ entity ov7670_regs is
     );
 end ov7670_regs;
 
-
 architecture rtl of ov7670_regs is
  
     type reg_entry_t is record
@@ -32,14 +30,12 @@ architecture rtl of ov7670_regs is
         val  : std_logic_vector(7 downto 0);
     end record;
 
-
     type reg_table_t is array (natural range <>) of reg_entry_t;
  
     constant REG_TABLE : reg_table_t := (
         -- Reset total y delay
         (x"12", x"80"),   -- COM7: software reset
-        (x"FE", x"00"),   -- delay 1ms
-        -- Formato de salida RGB565
+        (x"FE", x"00"),   -- delay 1ms        -- Formato de salida RGB565
         (x"12", x"04"),   -- COM7: RGB output
         (x"15", x"20"),   -- PCLK no oscila durante blanking (CRITICO anti-ruido)
         (x"40", x"D0"),   -- COM15: RGB565 full range
@@ -134,12 +130,12 @@ architecture rtl of ov7670_regs is
     signal start_pulse: std_logic := '0';
 
 begin
- 
+
     sccb_start  <= start_pulse;
     sccb_addr   <= REG_TABLE(idx).addr;
     sccb_data   <= REG_TABLE(idx).val;
     config_done <= '1' when state = 3 else '0';
-	 
+
     process(clk)
     begin
         if rising_edge(clk) then
@@ -181,8 +177,3 @@ begin
     end process;
  
 end rtl;
-
-
-
-
-

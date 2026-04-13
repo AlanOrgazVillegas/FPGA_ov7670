@@ -3,6 +3,7 @@
 -- Controlador SCCB (compatible I2C) para configurar la OV7670
 -- Frecuencia SCCB: ~100 kHz con clk_24 de 24 MHz (divisor = 240)
 -- =============================================================================
+
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -136,7 +137,7 @@ begin
                                     end if;
                                 when others => null;
                             end case;
-									 
+
                         -- ---------------------------------------------------
                         -- ACK: SCL sube y baja, ignoramos el valor de SDA
                         when ST_ACK1 | ST_ACK2 | ST_ACK3 =>
@@ -184,6 +185,4 @@ begin
         end if;
     end process;
 
-end rtl;									 
-												
-		  
+end rtl;	

@@ -73,4 +73,4 @@ begin
     BUFG_FX  : BUFG port map (I => clkfx_buf, O => clk_24);
     BUFG_DV  : BUFG port map (I => clkdv_buf, O => clk_25);
 
-end rtl;		  
+end rtl;		

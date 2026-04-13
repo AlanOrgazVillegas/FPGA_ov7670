@@ -1,6 +1,7 @@
 -- =============================================================================
 -- top_module.vhd
 -- OV7670 -> Frame Buffer 160x120 RGB565 (BRAM) -> VGA 640x480
+-- Pipeline NGRDI conectado EN PARALELO, NO interfiere con frame buffer
 -- FPGA: Xilinx Spartan 6 XC6SLX9 TQG144 - Oscilador 50 MHz en P21
 -- =============================================================================
 
@@ -17,10 +18,10 @@ entity top_module is
         vga_vs      : out   std_logic;
         vga_r       : out   std_logic_vector(3 downto 0);
         vga_g       : out   std_logic_vector(3 downto 0);
-        vga_b       : out   std_logic_vector(3 downto 0);		  
+        vga_b       : out   std_logic_vector(3 downto 0);
         cam_xclk    : out   std_logic;
         cam_pclk    : in    std_logic;
-        cam_vsync   : in    std_logic;
+        cam_vsync   : in    std_logic;		  
         cam_href    : in    std_logic;
         cam_sda     : inout std_logic;
         cam_scl     : out   std_logic;
@@ -28,7 +29,6 @@ entity top_module is
         cam_d       : in    std_logic_vector(7 downto 0)
     );
 end top_module;
-
 
 architecture rtl of top_module is
  
@@ -54,8 +54,7 @@ architecture rtl of top_module is
             sio_d   : inout std_logic
         );
     end component;
-
-
+ 
     component ov7670_regs is
         port (
             clk         : in  std_logic;
@@ -73,7 +72,7 @@ architecture rtl of top_module is
             pclk        : in  std_logic;
             vsync       : in  std_logic;
             href        : in  std_logic;
-            d           : in  std_logic_vector(7 downto 0);
+            d           : in  std_logic_vector(7 downto 0);	 
             wr_clk      : out std_logic;
             wr_en       : out std_logic;
             wr_addr     : out std_logic_vector(14 downto 0);
@@ -81,10 +80,24 @@ architecture rtl of top_module is
             frame_done  : out std_logic
         );
     end component;
- 
+
+    component ngrdi_pipeline is
+        port (
+            clk         : in  std_logic;
+            rst         : in  std_logic;
+            pixel_in    : in  std_logic_vector(15 downto 0);
+            pixel_valid : in  std_logic;
+            addr_in     : in  std_logic_vector(14 downto 0);
+            pixel_out   : out std_logic_vector(15 downto 0);
+            wr_en_out   : out std_logic;
+            addr_out    : out std_logic_vector(14 downto 0);
+            ngrdi_out   : out std_logic_vector(7 downto 0);
+            ngrdi_valid : out std_logic
+        );
+    end component;
+
     component frame_buffer is
         port (
-
             wr_clk  : in  std_logic;
             wr_en   : in  std_logic;
             wr_addr : in  std_logic_vector(14 downto 0);
@@ -108,24 +121,38 @@ architecture rtl of top_module is
             vga_b   : out std_logic_vector(3 downto 0)
         );
     end component;
-
+ 
+    -- Señales de sistema
     signal clk_24      : std_logic;
     signal clk_25      : std_logic;
     signal pll_locked  : std_logic;
     signal rst         : std_logic;
     signal rst_sr      : std_logic_vector(3 downto 0) := (others => '1');
+
+    -- SCCB
     signal sccb_start  : std_logic;
     signal sccb_addr   : std_logic_vector(7 downto 0);
     signal sccb_data   : std_logic_vector(7 downto 0);
     signal sccb_done   : std_logic;
     signal config_done : std_logic;
+
+    -- cam_capture -> frame_buffer (FLUJO ORIGINAL SIN MODIFICAR)
     signal fb_wr_clk   : std_logic;
     signal fb_wr_en    : std_logic;
     signal fb_wr_addr  : std_logic_vector(14 downto 0);
     signal fb_wr_data  : std_logic_vector(15 downto 0);
+    signal frame_done  : std_logic;
+ 
+    -- frame_buffer -> vga_controller
     signal fb_rd_addr  : std_logic_vector(14 downto 0);
     signal fb_rd_data  : std_logic_vector(15 downto 0);
-    signal frame_done  : std_logic;
+
+    -- ngrdi_pipeline salidas (en paralelo, no van al frame buffer)
+    signal ngrdi_px_out : std_logic_vector(15 downto 0);
+    signal ngrdi_we_out : std_logic;
+    signal ngrdi_ad_out : std_logic_vector(14 downto 0);
+    signal ngrdi_result : std_logic_vector(7 downto 0);
+    signal ngrdi_valid  : std_logic;
 
 begin
  
@@ -143,17 +170,17 @@ begin
     end process;
     rst <= rst_sr(3);
 
+    -- =========================================================================
+    -- Flujo original intacto
+    -- =========================================================================
     U_CLK : clk_gen
         port map (clk_50 => clk_50, rst => '0',
                   clk_24 => clk_24, clk_25 => clk_25, locked => pll_locked);
-
 
     U_SCCB : sccb_master
         port map (clk => clk_24, rst => rst,
                   start => sccb_start, addr => sccb_addr, data => sccb_data,
                   done => sccb_done, sio_c => cam_scl, sio_d => cam_sda);
-
-
 
     U_REGS : ov7670_regs
         port map (clk => clk_24, rst => rst,
@@ -161,22 +188,24 @@ begin
                   sccb_data => sccb_data, sccb_done => sccb_done,
                   config_done => config_done);
 
-
     U_CAP : cam_capture
         port map (pclk => cam_pclk, vsync => cam_vsync,
                   href => cam_href, d => cam_d,
-                  wr_clk => fb_wr_clk, wr_en => fb_wr_en,
-                  wr_addr => fb_wr_addr, wr_data => fb_wr_data,
+                  wr_clk  => fb_wr_clk,
+                  wr_en   => fb_wr_en,
+                  wr_addr => fb_wr_addr,
+                  wr_data => fb_wr_data,
                   frame_done => frame_done);
 
-
-
+    -- cam_capture conectado DIRECTAMENTE al frame_buffer
     U_FB : frame_buffer
-        port map (wr_clk => fb_wr_clk, wr_en => fb_wr_en,
-                  wr_addr => fb_wr_addr, wr_data => fb_wr_data,
-                  rd_clk => clk_25, rd_addr => fb_rd_addr, rd_data => fb_rd_data);
-
-
+        port map (wr_clk  => fb_wr_clk,
+                  wr_en   => fb_wr_en,
+                  wr_addr => fb_wr_addr,
+                  wr_data => fb_wr_data,						
+                  rd_clk  => clk_25,
+                  rd_addr => fb_rd_addr,
+                  rd_data => fb_rd_data);	 
 
     U_VGA : vga_controller
         port map (clk_25 => clk_25, rst => rst,
@@ -184,18 +213,28 @@ begin
                   vga_hs => vga_hs, vga_vs => vga_vs,
                   vga_r => vga_r, vga_g => vga_g, vga_b => vga_b);
 
-
+    -- =========================================================================
+    -- Pipeline NGRDI EN PARALELO
+    -- Observa las mismas señales de cam_capture, calcula el indice
+    -- pero sus salidas NO estan conectadas al frame buffer
+    -- =========================================================================
+    U_NGRDI : ngrdi_pipeline
+        port map (
+            clk         => fb_wr_clk,
+            rst         => rst,
+            pixel_in    => fb_wr_data,
+            pixel_valid => fb_wr_en,
+            addr_in     => fb_wr_addr,
+            pixel_out   => ngrdi_px_out,  -- no conectado al FB
+            wr_en_out   => ngrdi_we_out,  -- no conectado al FB
+            addr_out    => ngrdi_ad_out,  -- no conectado al FB
+            ngrdi_out   => ngrdi_result,  -- valor NGRDI Q1.7
+            ngrdi_valid => ngrdi_valid
+        );
 
     oddr_xclk : ODDR2
         generic map (DDR_ALIGNMENT => "NONE", INIT => '0', SRTYPE => "SYNC")
         port map (Q => cam_xclk, C0 => clk_24, C1 => not clk_24,
                   CE => '1', D0 => '1', D1 => '0', R => '0', S => '0');
  
-end rtl;
-
-
-
-
-
-
-		  
+end rtl;		  	 

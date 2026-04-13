@@ -30,14 +30,14 @@ architecture rtl of vga_controller is
     constant H_FP    : integer := 16;
     constant H_SYNC  : integer := 96;
     constant H_BP    : integer := 48;
-    constant H_TOTAL : integer := 800;	 
+    constant H_TOTAL : integer := 800;	
 
     constant V_DISP  : integer := 480;
     constant V_FP    : integer := 10;
     constant V_SYNC  : integer := 2;
     constant V_BP    : integer := 33;
     constant V_TOTAL : integer := 525;
-	 
+
     -- Frame buffer: 160x120, escala 4x en cada dimension
     constant FB_W    : integer := 160;
     constant FB_H    : integer := 120;	 
@@ -82,8 +82,8 @@ begin
                 end if;
             end if;
         end if;
-    end process;					 
-					 
+    end process;
+
     -- -------------------------------------------------------------------------
     -- Pulsos de sincronismo (activo bajo)
     -- -------------------------------------------------------------------------
@@ -127,19 +127,16 @@ begin
 
 	 --vga_r <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
 	 --vga_g <= fb_data(10 downto 7) when visible_d = '1' else (others => '0');
-	 --vga_b <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');	
+	 --vga_b <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
 
---vga_r <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
+
+vga_r <= fb_data(3  downto 0)  when visible_d = '1' else (others => '0');
+vga_g <= fb_data(9  downto 6)  when visible_d = '1' else (others => '0');
+vga_b <= fb_data(14 downto 11) when visible_d = '1' else (others => '0');
+
+
+--vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
 --vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
---vga_b <= fb_data(15 downto 12) when visible_d = '1' else (others => '0'); 
-
-vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
-vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
-vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
+--vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
 
 end rtl;	
-
-
-
-
-	

@@ -25,7 +25,7 @@ entity cam_capture is
 end cam_capture;
 
 architecture rtl of cam_capture is
- 
+
     -- Sincronizar VSYNC y HREF en dominio pclk (doble registro)
     signal vsync_r1, vsync_r2 : std_logic := '0';
     signal href_r1,  href_r2  : std_logic := '0';
@@ -43,7 +43,8 @@ architecture rtl of cam_capture is
     signal we        : std_logic := '0';
     signal wdata     : std_logic_vector(15 downto 0) := (others => '0');
     signal fd        : std_logic := '0';
- 
+
+
 begin
 
     wr_clk     <= pclk;
@@ -51,7 +52,6 @@ begin
     wr_addr    <= std_logic_vector(px_addr);
     wr_data    <= wdata;
     frame_done <= fd;
-
 
     vsync_fall <= '1' when vsync_r1 = '0' and vsync_r2 = '1' else '0';
  
@@ -84,7 +84,6 @@ begin
             end if;
             href_prev <= href_r1;
 
-
             -- Captura durante HREF activo y VSYNC inactivo
             if href_r1 = '1' and vsync_r1 = '0' then
                 if byte_sel = '0' then
@@ -110,10 +109,3 @@ begin
     end process;
  
 end rtl;
-
-
-
-
-
-
-		  

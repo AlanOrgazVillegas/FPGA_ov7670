@@ -40,7 +40,7 @@ begin
             end if;
         end if;
     end process;
-	 
+
     process(rd_clk)
     begin
         if rising_edge(rd_clk) then
@@ -48,4 +48,4 @@ begin
         end if;
     end process;
 
-end rtl;	 
+end rtl;	
