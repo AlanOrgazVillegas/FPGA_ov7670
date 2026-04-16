@@ -129,14 +129,14 @@ begin
 	 --vga_g <= fb_data(10 downto 7) when visible_d = '1' else (others => '0');
 	 --vga_b <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
 
+-- Se ve mas verde y rojo
+      --vga_r <= fb_data(3  downto 0)  when visible_d = '1' else (others => '0');
+      --vga_g <= fb_data(9  downto 6)  when visible_d = '1' else (others => '0');
+      --vga_b <= fb_data(14 downto 11) when visible_d = '1' else (others => '0');
 
-vga_r <= fb_data(3  downto 0)  when visible_d = '1' else (others => '0');
-vga_g <= fb_data(9  downto 6)  when visible_d = '1' else (others => '0');
-vga_b <= fb_data(14 downto 11) when visible_d = '1' else (others => '0');
-
-
---vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
---vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
---vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
+--se ve azul
+vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
+vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
+vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
 
 end rtl;	

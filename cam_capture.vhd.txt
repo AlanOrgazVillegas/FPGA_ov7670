@@ -82,6 +82,7 @@ begin
                     row <= row + 1;
                 end if;
             end if;
+				
             href_prev <= href_r1;
 
             -- Captura durante HREF activo y VSYNC inactivo

@@ -1,0 +1,122 @@
+--tb_ngrdi_pipeline.vhd
+
+library IEEE;
+use IEEE.STD_LOGIC_1164.ALL;
+use IEEE.NUMERIC_STD.ALL;
+
+entity tb_ngrdi_pipeline is
+-- Un testbench no tiene puertos
+end tb_ngrdi_pipeline;
+
+architecture behavior of tb_ngrdi_pipeline is 
+
+    -- Instanciamos el módulo de tu compañero
+    component ngrdi_pipeline
+    port (
+        clk         : in  std_logic;
+        rst         : in  std_logic;	 
+        pixel_in    : in  std_logic_vector(15 downto 0); -- RGB565
+        pixel_valid : in  std_logic;
+        addr_in     : in  std_logic_vector(14 downto 0);
+        pixel_out   : out std_logic_vector(15 downto 0);	 
+        wr_en_out   : out std_logic;
+        addr_out    : out std_logic_vector(14 downto 0);
+        ngrdi_out   : out std_logic_vector(7 downto 0)   -- Salida Q1.7
+    );
+    end component;	 
+
+    -- Señales internas
+    signal clk         : std_logic := '0';
+    signal rst         : std_logic := '0';
+    signal pixel_in    : std_logic_vector(15 downto 0) := (others => '0');
+    signal pixel_valid : std_logic := '0';
+    signal addr_in     : std_logic_vector(14 downto 0) := (others => '0');
+    
+    signal pixel_out   : std_logic_vector(15 downto 0);
+    signal wr_en_out   : std_logic;
+    signal addr_out    : std_logic_vector(14 downto 0);
+    signal ngrdi_out   : std_logic_vector(7 downto 0);
+
+    -- Reloj simulado (50 MHz)
+    constant clk_period : time := 20 ns;
+begin
+
+    -- Mapeo de puertos
+    uut: ngrdi_pipeline PORT MAP (
+        clk         => clk,
+        rst         => rst,
+        pixel_in    => pixel_in,
+        pixel_valid => pixel_valid,
+        addr_in     => addr_in,
+        pixel_out   => pixel_out,
+        wr_en_out   => wr_en_out,
+        addr_out    => addr_out,
+        ngrdi_out   => ngrdi_out
+    );
+
+    -- Generador de Reloj
+    clk_process :process
+    begin
+        clk <= '0';
+        wait for clk_period/2;
+        clk <= '1';
+        wait for clk_period/2;
+    end process;
+
+    -- Proceso de estímulos (Inyección de Píxeles RGB565)
+    stim_proc: process
+    begin        
+        -- Reset inicial
+        rst <= '1';
+        wait for 40 ns;
+        rst <= '0';
+        wait for 40 ns;
+
+        -- Habilitamos la validación del píxel
+        pixel_valid <= '1';
+
+        -- =========================================================
+        -- CASO 1: Hoja Sana (Mucho Verde, Poco Rojo)
+        -- Binario: 01000 (R) _ 111111 (G) _ 00000 (B)
+        -- =========================================================
+        pixel_in <= x"47E0"; 
+        addr_in  <= "000000000000001";
+        wait for clk_period * 5; -- Esperamos a que salga del pipeline	
+
+        -- =========================================================
+        -- CASO 2: Hoja Estresada/Seca (Mucho Rojo, Poco Verde)
+        -- Binario: 11111 (R) _ 010000 (G) _ 00000 (B)
+        -- =========================================================
+        pixel_in <= x"FA00"; 
+        addr_in  <= "000000000000010";
+        wait for clk_period * 5;	
+
+        -- =========================================================
+        -- CASO 3: Oscuridad Total (Cero división)
+        -- Binario: 00000 (R) _ 000000 (G) _ 00000 (B)
+        -- =========================================================
+        pixel_in <= x"0000"; 
+        addr_in  <= "000000000000011";
+        wait for clk_period * 5;		 
+
+        -- =========================================================
+        -- CASO 4: Saturación de Luz (Casi empate alto)
+        -- Binario: 11111 (R) _ 111111 (G) _ 00000 (B)
+        -- =========================================================
+        pixel_in <= x"FFE0"; 
+        addr_in  <= "000000000000100";
+        wait for clk_period * 5;
+
+        -- =========================================================
+        -- CASO 5: Empate Exacto (Tierra / Fondo neutro)
+        -- Binario: 10000 (R) _ 100000 (G) _ 00000 (B)
+        -- =========================================================
+        pixel_in <= x"8400"; 
+        addr_in  <= "000000000000101";
+        wait for clk_period * 5;	
+
+        pixel_valid <= '0'; -- Apagamos la cámara
+        wait;
+    end process;
+
+end behavior;		  

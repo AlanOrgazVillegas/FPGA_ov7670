@@ -41,7 +41,7 @@ architecture rtl of ov7670_regs is
         (x"40", x"D0"),   -- COM15: RGB565 full range
         (x"3A", x"04"),   -- TSLB: orden de bytes correcto (CRITICO para color)
         -- Control de clock
-        (x"11", x"80"),   -- CLKRC: PLL interno
+        (x"11", x"01"),   -- CLKRC: PLL interno
         (x"0C", x"00"),   -- COM3: default
         (x"3E", x"00"),   -- COM14: no scaling, PCLK normal
         (x"04", x"00"),   -- COM1: deshabilitar CCIR656
