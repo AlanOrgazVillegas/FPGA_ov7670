@@ -1,11 +1,11 @@
 -- =============================================================================
--- cam_capture.vhd
--- Captura OV7670 QVGA 320x240 con submuestre 2x2 -> 160x120
--- Clock: rising_edge(pclk) - correcto porque datos cambian en flanco pclk
--- VSYNC: flanco de BAJADA = inicio de frame (segun datasheet OV7670)
--- Byte order: pixel_hi & pixel_lo (correcto con registro 0x3A=0x04)
+-- cam_capture.vhd  (v5 - colores correctos + sin ruido)
+-- Orden real OV7670 con reg 0x3A=0x04: Y Cb Y Cr
+-- Byte 0=Y0, 1=Cb(U), 2=Y1, 3=Cr(V)
+-- Pero colores correctos requieren tratar byte1=V, byte3=U
+-- (la camara en esta configuracion envia V antes que U)
+-- RGB565: [15:10]=G6  [9:5]=R5  [4:0]=B5  <- orden real del bus
 -- =============================================================================
-
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -26,27 +26,32 @@ end cam_capture;
 
 architecture rtl of cam_capture is
 
-    -- Sincronizar VSYNC y HREF en dominio pclk (doble registro)
     signal vsync_r1, vsync_r2 : std_logic := '0';
-    signal href_r1,  href_r2  : std_logic := '0';
+    signal href_r1            : std_logic := '0';
+    signal vsync_fall         : std_logic := '0';
+    signal href_prev          : std_logic := '0';
+	 
+    signal byte_cnt   : unsigned(1 downto 0) := (others => '0');
+    signal y0_reg     : unsigned(7 downto 0) := (others => '0');
+    signal cb_reg     : unsigned(7 downto 0) := (others => '0');  -- byte 1
 
-    signal vsync_fall : std_logic;
- 
-    signal byte_sel  : std_logic := '0';
-    signal pixel_hi  : std_logic_vector(7 downto 0) := (others => '0');
+    signal group_cnt  : unsigned(7 downto 0) := (others => '0');
+    signal row        : unsigned(7 downto 0) := (others => '0');
+    signal px_addr    : unsigned(14 downto 0) := (others => '0');
 
-    signal col       : unsigned(8 downto 0) := (others => '0');
-    signal row       : unsigned(7 downto 0) := (others => '0');
-    signal px_addr   : unsigned(14 downto 0) := (others => '0');
+    signal we         : std_logic := '0';
+    signal wdata      : std_logic_vector(15 downto 0) := (others => '0');
+    signal fd         : std_logic := '0';
 
-    signal href_prev : std_logic := '0';
-    signal we        : std_logic := '0';
-    signal wdata     : std_logic_vector(15 downto 0) := (others => '0');
-    signal fd        : std_logic := '0';
-
+    function clamp8(x : signed(15 downto 0)) return unsigned is
+    begin
+        if x < 0 then    return to_unsigned(0, 8);
+        elsif x > 255 then return to_unsigned(255, 8);
+        else             return unsigned(x(7 downto 0));
+        end if;
+    end function;
 
 begin
-
     wr_clk     <= pclk;
     wr_en      <= we;
     wr_addr    <= std_logic_vector(px_addr);
@@ -54,59 +59,122 @@ begin
     frame_done <= fd;
 
     vsync_fall <= '1' when vsync_r1 = '0' and vsync_r2 = '1' else '0';
- 
+
     process(pclk)
+        variable y_v  : signed(15 downto 0);
+        variable cb_v : signed(15 downto 0);  -- byte 1 (lo que la cam llama U)
+        variable cr_v : signed(15 downto 0);  -- byte 3 (lo que la cam llama V)
+        variable r_s  : signed(15 downto 0);
+        variable g_s  : signed(15 downto 0);
+        variable b_s  : signed(15 downto 0);
+        variable r8   : unsigned(7 downto 0);
+        variable g8   : unsigned(7 downto 0);
+        variable b8   : unsigned(7 downto 0);
     begin
         if rising_edge(pclk) then
-            -- Doble registro VSYNC y HREF
             vsync_r1 <= vsync;  vsync_r2 <= vsync_r1;
-            href_r1  <= href;   href_r2  <= href_r1;
-
+            href_r1  <= href;
             we <= '0';
             fd <= '0';
- 
-            -- Flanco bajada VSYNC = nuevo frame
-            if vsync_fall = '1' then
-                col      <= (others => '0');
-                row      <= (others => '0');
-                px_addr  <= (others => '0');
-                byte_sel <= '0';
-                fd       <= '1';
-            end if;
 
-            -- Flanco bajada HREF = fin de linea
-            if href_r1 = '0' and href_prev = '1' then
-                col      <= (others => '0');
-                byte_sel <= '0';
+            if vsync_fall = '1' then
+                group_cnt <= (others => '0');
+                row       <= (others => '0');
+                px_addr   <= (others => '0');
+                byte_cnt  <= (others => '0');
+                href_prev <= '0';
+                fd        <= '1';
+            elsif href_r1 = '0' and href_prev = '1' then
+                byte_cnt  <= (others => '0');
+                group_cnt <= (others => '0');
                 if row < 239 then
                     row <= row + 1;
                 end if;
             end if;
-				
+
             href_prev <= href_r1;
 
-            -- Captura durante HREF activo y VSYNC inactivo
             if href_r1 = '1' and vsync_r1 = '0' then
-                if byte_sel = '0' then
-                    pixel_hi <= d;
-                    byte_sel <= '1';
-                else
-                    byte_sel <= '0';
-                    -- Submuestre 2x2
-                    if col(0) = '0' and row(0) = '0' then
-                        wdata <= pixel_hi & d;
-                        we    <= '1';
-                       if px_addr < 19199 then
-                            px_addr <= px_addr + 1;
+                case byte_cnt is
+
+                    when "00" =>  -- Y0
+                        y0_reg   <= unsigned(d);
+                        byte_cnt <= "01";
+
+                    when "01" =>  -- Cb (byte 1)
+                        cb_reg   <= unsigned(d);
+                        byte_cnt <= "10";
+
+                    when "10" =>  -- Y1 (descartado)
+                        byte_cnt <= "11";
+
+                    when "11" =>  -- Cr (byte 3) - grupo completo
+                        byte_cnt <= "00";
+
+                        if row(0) = '0' and group_cnt < 160 then
+
+                            y_v  := signed(resize(y0_reg, 16));
+                            -- La camara con 0x3A=0x04 envia:
+                            -- byte1=Cb actua como Cr → usar para R
+                            -- byte3=Cr actua como Cb → usar para B
+                            cb_v := signed(resize(cb_reg,        16)) - 128;  -- → canal R
+                            cr_v := signed(resize(unsigned(d),   16)) - 128;  -- → canal B
+
+
+                            -- BT.601 exacto con aproximacion shift:
+                            -- R = Y + 1.402*Cr  → aqui Cr=cb_v
+                            r_s := y_v
+                                 + cb_v
+                                 + shift_right(cb_v, 2)
+                                 + shift_right(cb_v, 4)
+                                 + shift_right(cb_v, 5);
+                            -- 1 + 0.25 + 0.0625 + 0.03125 = 1.34375 ≈ 1.402 ✓
+
+                            -- G = Y - 0.344*Cb - 0.714*Cr
+                            -- aqui Cb=cr_v, Cr=cb_v
+                            g_s := y_v
+                                 - shift_right(cr_v, 2)
+                                 - shift_right(cr_v, 4)
+                                 - shift_right(cr_v, 5)
+                                 - shift_right(cb_v, 1)
+                                 - shift_right(cb_v, 3)
+                                 - shift_right(cb_v, 4);
+
+                            -- B = Y + 1.772*Cb  → aqui Cb=cr_v
+                            b_s := y_v
+                                 + cr_v
+                                 + shift_right(cr_v, 1)
+                                 + shift_right(cr_v, 2)
+                                 + shift_right(cr_v, 4)
+                                 + shift_right(cr_v, 5);
+
+                            r8 := clamp8(r_s);
+                            g8 := clamp8(g_s);
+                            b8 := clamp8(b_s);
+
+                            wdata <= std_logic_vector(r8(7 downto 3)) &
+                                     std_logic_vector(g8(7 downto 2)) &
+                                     std_logic_vector(b8(7 downto 3));
+
+                            we <= '1';
+                            if px_addr < 19199 then
+                                px_addr <= px_addr + 1;
+                            end if;
+
                         end if;
-                    end if;
-                    if col < 319 then
-                        col <= col + 1;
-                    end if;
-                end if;
+
+                        if group_cnt < 255 then
+                            group_cnt <= group_cnt + 1;
+                        end if;
+
+                    when others =>
+                        byte_cnt <= "00";
+
+                end case;
             end if;
- 
+
         end if;
     end process;
- 
-end rtl;
+
+end rtl;				
+		  
