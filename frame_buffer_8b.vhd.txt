@@ -1,0 +1,45 @@
+-- =============================================================================
+-- frame_buffer_8b.vhd
+-- Frame buffer 8 bits por pixel — 160x120 = 19200 palabras x 8 bits
+-- Ocupa ~9 RAMB16BWER vs 19 del de 16 bits → cabe junto al original
+-- Puerto A escritura (dominio PCLK), Puerto B lectura (dominio clk_25)
+-- =============================================================================
+
+library ieee;
+use ieee.std_logic_1164.all;
+use ieee.numeric_std.all;
+
+entity frame_buffer_8b is
+    port (
+        wr_clk  : in  std_logic;
+        wr_en   : in  std_logic;
+        wr_addr : in  std_logic_vector(14 downto 0);
+        wr_data : in  std_logic_vector(7 downto 0);
+        rd_clk  : in  std_logic;
+        rd_addr : in  std_logic_vector(14 downto 0);
+        rd_data : out std_logic_vector(7 downto 0)
+    );
+end frame_buffer_8b;
+
+architecture rtl of frame_buffer_8b is
+    type ram_t is array (0 to 19199) of std_logic_vector(7 downto 0);
+    shared variable ram : ram_t := (others => (others => '0'));
+    attribute ram_style        : string;
+    attribute ram_style of ram : variable is "block";
+begin
+    process(wr_clk)
+    begin
+        if rising_edge(wr_clk) then
+            if wr_en = '1' then
+                ram(to_integer(unsigned(wr_addr))) := wr_data;
+            end if;
+        end if;
+    end process;	 
+	 
+    process(rd_clk)
+    begin
+        if rising_edge(rd_clk) then
+            rd_data <= ram(to_integer(unsigned(rd_addr)));
+        end if;
+    end process;
+end rtl; 

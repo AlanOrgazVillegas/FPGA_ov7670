@@ -1,128 +1,84 @@
 -- =============================================================================
--- ngrdi_pipeline.vhd
--- Pipeline aritmético: índice NGRDI = (G - R) / (G + R)
--- Entrada: pixel RGB565 de 16 bits desde cam_capture
--- Salida:  resultado en punto fijo Q1.7 (1 bit signo + 7 bits fracción)
---          rango [-1.0, +1.0] representado en complemento a 2
+-- ngrdi_pipeline.vhd  (v3 - salida 8 bits indice para FB_8b)
+-- Entrada: pixel RGB565 empaquetado G6R5B5 desde cam_capture v4
+--   bits[15:10] = G6
+--   bits[9:5]   = R5
+--   bits[4:0]   = B5
 --
--- Implementación por desplazamiento de bits (aproximación punto fijo):
---   Etapa 1 (ciclo 1): Extraer G y B, normalizar a 8 bits
---   Etapa 2 (ciclo 2): Calcular num = G - R  y  den = G + R
---   Etapa 3 (ciclo 3): División aproximada por desplazamiento:
---                      resultado = (num << 7) / den  usando resta iterativa
---                      simplificado a: si den != 0 → (num * 128) / den
---
--- FPGA: Xilinx Spartan 6 XC6SLX9
+-- NGRDI = (G - R) / (G + R)  en punto fijo Q1.7
+-- Salida ngrdi_index (8 bits) → va al frame_buffer_8b
+-- El vga_controller aplica la paleta de falsos colores en tiempo real
+-- Esto ahorra BRAM vs guardar RGB565 completo
 -- =============================================================================
-
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
- 
+
 entity ngrdi_pipeline is
     port (
-        clk        : in  std_logic;                      -- dominio pclk
-        rst        : in  std_logic;
-        -- Entrada: pixel RGB565 y señal de escritura válida
-        pixel_in   : in  std_logic_vector(15 downto 0);  -- RGB565
-        pixel_valid: in  std_logic;                       -- wr_en de cam_capture	 
-        addr_in    : in  std_logic_vector(14 downto 0);  -- dirección del pixel
- 
-        -- Salida al frame buffer (3 ciclos de latencia)
-        pixel_out  : out std_logic_vector(15 downto 0);  -- RGB565 modificado	 
-		  
-        wr_en_out  : out std_logic;
-        addr_out   : out std_logic_vector(14 downto 0);
- 
-        -- Salida del índice NGRDI en Q1.7	
-        -- bit[7] = signo, bits[6:0] = fracción
-        -- +1.0 ≈ 0b0_1111111 = 0x7F
-        -- -1.0 ≈ 0b1_0000000 = 0x80 (complemento a 2)
-        ngrdi_out  : out std_logic_vector(7 downto 0);
-        ngrdi_valid: out std_logic
-    );		  
-	 
+        clk          : in  std_logic;
+        rst          : in  std_logic;
+        pixel_in     : in  std_logic_vector(15 downto 0);
+        pixel_valid  : in  std_logic;
+        addr_in      : in  std_logic_vector(14 downto 0);
+        -- Salida al frame_buffer_8b (indice NGRDI crudo)
+        ngrdi_index  : out std_logic_vector(7 downto 0);
+        wr_en_out    : out std_logic;
+        addr_out     : out std_logic_vector(14 downto 0);
+        -- Alias para debug
+        ngrdi_valid  : out std_logic
+    );
 end ngrdi_pipeline;
- 
-architecture rtl of ngrdi_pipeline is	
 
-    -- -------------------------------------------------------------------------
-    -- Etapa 1: extracción de canales
-    -- -------------------------------------------------------------------------
-    signal s1_valid : std_logic := '0'; 
+architecture rtl of ngrdi_pipeline is
+
+    signal s1_valid : std_logic := '0';
     signal s1_addr  : unsigned(14 downto 0) := (others => '0');
-    signal s1_pixel : std_logic_vector(15 downto 0) := (others => '0');
-    signal s1_R     : unsigned(7 downto 0) := (others => '0');  -- R extendido a 8b
-    signal s1_G     : unsigned(7 downto 0) := (others => '0');  -- G extendido a 8b	 
-	 
-    -- -------------------------------------------------------------------------
-    -- Etapa 2: suma y resta
-    -- -------------------------------------------------------------------------
+    signal s1_G     : unsigned(7 downto 0)  := (others => '0');
+    signal s1_R     : unsigned(7 downto 0)  := (others => '0');		  
+
     signal s2_valid : std_logic := '0';
     signal s2_addr  : unsigned(14 downto 0) := (others => '0');
-    signal s2_pixel : std_logic_vector(15 downto 0) := (others => '0');
-    -- num = G - R  (signed, 9 bits para no perder signo)
-    signal s2_num   : signed(8 downto 0) := (others => '0');
-    -- den = G + R  (unsigned, 9 bits para capturar carry)
-    signal s2_den   : unsigned(8 downto 0) := (others => '0');
+    signal s2_num   : signed(8 downto 0)    := (others => '0');
+    signal s2_den   : unsigned(8 downto 0)  := (others => '0');
 
-    -- -------------------------------------------------------------------------
-    -- Etapa 3: división aproximada → resultado Q1.7
-    -- Usamos: result = (num << 7) / den
-    -- Para evitar divisor en FPGA (costoso), aproximamos con:
-    --   Si den = 0  → resultado = 0
-    --   Si den != 0 → resultado = saturate( (num * 128) / den )
-    -- La división se implementa con el operador / de numeric_std
-    -- que Xilinx sintetiza con lógica combinacional (shift-subtract).
-    -- -------------------------------------------------------------------------
-    signal s3_valid  : std_logic := '0';
-    signal s3_addr   : unsigned(14 downto 0) := (others => '0');
-    signal s3_pixel  : std_logic_vector(15 downto 0) := (others => '0');
-    signal s3_ngrdi  : signed(7 downto 0) := (others => '0');
+    signal s3_valid : std_logic := '0';
+    signal s3_addr  : unsigned(14 downto 0) := (others => '0');
+    signal s3_idx   : signed(7 downto 0)    := (others => '0');
 
 begin
- 
-    -- =========================================================================
-    -- ETAPA 1: Registro de extracción
-    -- RGB565: [15:11]=R5  [10:5]=G6  [4:0]=B5
-    -- Extendemos a 8 bits replicando el MSB (técnica estándar para normalizar)
-    --   R8 = R5 & R5[4:2]   (5 bits → 8 bits)
-    --   G8 = G6 & G6[5:3]   (6 bits → 8 bits)
-    -- =========================================================================
 
+    -- =========================================================================
+    -- ETAPA 1: Extraer G y R del empaquetado G6R5B5
+    -- G: bits[15:10] → extender a 8 bits replicando MSBs
+    -- R: bits[9:5]   → extender a 8 bits replicando MSBs
+    -- =========================================================================
+	 
     process(clk)
-        variable r5 : unsigned(4 downto 0);
         variable g6 : unsigned(5 downto 0);
+        variable r5 : unsigned(4 downto 0);
     begin
         if rising_edge(clk) then
             if rst = '1' then
                 s1_valid <= '0';
-                s1_R     <= (others => '0');
                 s1_G     <= (others => '0');
+                s1_R     <= (others => '0');
                 s1_addr  <= (others => '0');
-                s1_pixel <= (others => '0');
             else
                 s1_valid <= pixel_valid;
                 s1_addr  <= unsigned(addr_in);
-                s1_pixel <= pixel_in;
-					 
-                -- Extraer canales del RGB565
-                r5 := unsigned(pixel_in(15 downto 11));
-                g6 := unsigned(pixel_in(10 downto 5));
-
-                -- Normalizar a 8 bits: replicar bits superiores en los inferiores
-                -- R: 5→8 bits:  r5 & r5[4:2]
-                s1_R <= r5 & r5(4 downto 2);
-                -- G: 6→8 bits:  g6 & g6[5:4]
+                g6       := unsigned(pixel_in(15 downto 10));
+                r5       := unsigned(pixel_in(9  downto 5));
+                -- G: 6->8 bits: g6 & g6[5:4]
                 s1_G <= g6 & g6(5 downto 4);
+                -- R: 5->8 bits: r5 & r5 & r5[4:3]
+                s1_R <= r5 & r5(4 downto 2);
             end if;
         end if;
-    end process;
-
+    end process;		  
+	 
     -- =========================================================================
-    -- ETAPA 2: Calcular numerador y denominador
-    --   num = G - R  (puede ser negativo → signed)
-    --   den = G + R  (siempre positivo → unsigned)
+    -- ETAPA 2: num = G - R,  den = G + R
     -- =========================================================================
     process(clk)
     begin
@@ -132,79 +88,60 @@ begin
                 s2_num   <= (others => '0');
                 s2_den   <= (others => '0');
                 s2_addr  <= (others => '0');
-                s2_pixel <= (others => '0');
             else
                 s2_valid <= s1_valid;
                 s2_addr  <= s1_addr;
-                s2_pixel <= s1_pixel;
-					 
-               -- Extender a 9 bits antes de operar para capturar overflow
-                s2_num <= signed('0' & s1_G) - signed('0' & s1_R);
-                s2_den <= ('0' & s1_G) + ('0' & s1_R);
+                s2_num   <= signed('0' & s1_G) - signed('0' & s1_R);
+                s2_den   <= ('0'  & s1_G)      + ('0'  & s1_R);
             end if;
         end if;
     end process;
 
     -- =========================================================================
-    -- ETAPA 3: División en punto fijo Q1.7
-    --   result_Q17 = (num << 7) / den
-    --   Rango teórico: [-128, +128] → saturamos a [-128, +127]
-    --
-    -- Implementación con desplazamiento de bits:
-    --   num_scaled = num * 128  (signed 16 bits)
-    --   result     = num_scaled / den  (signed / unsigned)
+    -- ETAPA 3: Division Q1.7 → resultado [-128, +127]
+    -- result = (num << 7) / den
     -- =========================================================================
+
     process(clk)
         variable num_scaled : signed(15 downto 0);
         variable result_div : signed(15 downto 0);
         variable den_ext    : signed(15 downto 0);
+        variable idx        : signed(7 downto 0);
     begin
         if rising_edge(clk) then
             if rst = '1' then
                 s3_valid <= '0';
-                s3_ngrdi <= (others => '0');
+                s3_idx   <= (others => '0');
                 s3_addr  <= (others => '0');
-                s3_pixel <= (others => '0');
             else
                 s3_valid <= s2_valid;
                 s3_addr  <= s2_addr;
-                s3_pixel <= s2_pixel;
 
                 if s2_den = 0 then
-                    -- Píxel completamente negro: índice indefinido → 0
-                    s3_ngrdi <= (others => '0');
+                    idx := (others => '0');
                 else
-                    -- Escalar numerador 7 bits a la izquierda (× 128)
-                    -- s2_num es 9 bits signed, shift left 7 → 16 bits
                     num_scaled := shift_left(resize(s2_num, 16), 7);
+                    den_ext    := signed(resize(s2_den, 16));
+                    result_div := num_scaled / den_ext;
 
-                    -- Extender denominador a signed para la división
-                    den_ext := signed(resize(s2_den, 16));	
-
-                    -- División entera (Xilinx implementa con shift-subtract)
-                    result_div := num_scaled / den_ext;	
-
-                    -- Saturar a 8 bits signed [-128, +127]
                     if result_div > 127 then
-                        s3_ngrdi <= to_signed(127, 8);
+                        idx := to_signed(127, 8);
                     elsif result_div < -128 then
-                        s3_ngrdi <= to_signed(-128, 8);
+                        idx := to_signed(-128, 8);
                     else
-                        s3_ngrdi <= result_div(7 downto 0);
+                        idx := result_div(7 downto 0);
                     end if;
                 end if;
+
+                s3_idx <= idx;
             end if;
         end if;
     end process;
 	 
-    -- =========================================================================
     -- Salidas
-    -- =========================================================================
-    -- El pixel original se propaga sin modificar (solo se añade el índice)
-    pixel_out  <= s3_pixel;
-    wr_en_out  <= s3_valid;	 
-    addr_out   <= std_logic_vector(s3_addr);
-    ngrdi_out  <= std_logic_vector(s3_ngrdi);
-    ngrdi_valid<= s3_valid;
- 
-end rtl;						  
+    ngrdi_index <= std_logic_vector(s3_idx);
+    wr_en_out   <= s3_valid;
+    addr_out    <= std_logic_vector(s3_addr);
+    ngrdi_valid <= s3_valid;
+
+end rtl;	 	 

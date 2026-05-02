@@ -1,24 +1,36 @@
 -- =============================================================================
--- vga_controller.vhd  (corregido — sin duplicacion, imagen completa 640x480)
--- VGA 640x480 @ 60 Hz — pixel clock 25 MHz
--- Frame buffer 160x120 escalado 4x4 a pantalla completa
+-- vga_controller.vhd  (v3 - split screen + paleta falsos colores en tiempo real)
+-- Izquierda (0..319)  : imagen normal RGB desde fb principal
+-- Derecha   (320..639): falso color NGRDI desde fb_8b
+--
+-- Paleta NGRDI (indice signed 8 bits):
+--   >= +20  : verde intenso  (vegetacion sana)
+--   +5..+19 : verde claro    (vegetacion moderada)
+--   -5..+4  : amarillo       (vegetacion debil)
+--   -20..-6 : naranja        (estres leve)
+--   < -20   : rojo           (estres severo / suelo)
 -- =============================================================================
-
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
+
 entity vga_controller is
     port (
-        clk_25  : in  std_logic;
-        rst     : in  std_logic;
-        fb_addr : out std_logic_vector(14 downto 0);
-        fb_data : in  std_logic_vector(15 downto 0);
-        vga_hs  : out std_logic;
-        vga_vs  : out std_logic;
-        vga_r   : out std_logic_vector(3 downto 0);
-        vga_g   : out std_logic_vector(3 downto 0);
-        vga_b   : out std_logic_vector(3 downto 0)
+        clk_25        : in  std_logic;
+        rst           : in  std_logic;
+        -- Framebuffer normal (16 bits G6R5B5)
+        fb_addr       : out std_logic_vector(14 downto 0);
+        fb_data       : in  std_logic_vector(15 downto 0);
+        -- Framebuffer NGRDI (8 bits indice signed)
+        fb_ngrdi_addr : out std_logic_vector(14 downto 0);
+        fb_ngrdi_data : in  std_logic_vector(7 downto 0);		  
+        -- Salida VGA
+        vga_hs        : out std_logic;
+        vga_vs        : out std_logic;
+        vga_r         : out std_logic_vector(3 downto 0);
+        vga_g         : out std_logic_vector(3 downto 0);		  
+        vga_b         : out std_logic_vector(3 downto 0)
     );
 end vga_controller;
 
@@ -35,22 +47,69 @@ architecture rtl of vga_controller is
     constant V_SYNC  : integer := 2;
     constant V_BP    : integer := 33;
     constant V_TOTAL : integer := 525;
+	 
+    constant FB_W   : integer := 160;
+    constant FB_H   : integer := 120;
+    constant HALF_H : integer := 320;  -- cada mitad = 320px → escala 2x
 
-    constant FB_W    : integer := 160;
-    constant FB_H    : integer := 120;
+    signal h_cnt : integer range 0 to H_TOTAL-1 := 0;
+    signal v_cnt : integer range 0 to V_TOTAL-1 := 0;		  
+		  
+    signal visible     : std_logic := '0';
+    signal visible_d   : std_logic := '0';
+    signal right_half  : std_logic := '0';
+    signal right_half_d: std_logic := '0';
+    -- Segunda etapa de delay para alinear con latencia BRAM
+    signal visible_d2   : std_logic := '0';
+    signal right_half_d2: std_logic := '0';
 
-    signal h_cnt     : integer range 0 to H_TOTAL-1 := 0;
-    signal v_cnt     : integer range 0 to V_TOTAL-1 := 0;
+    signal fb_x    : integer range 0 to FB_W-1 := 0;
+    signal fb_y    : integer range 0 to FB_H-1 := 0;
+    signal addr_int: unsigned(14 downto 0);
 
-    signal visible   : std_logic;
-    signal visible_d : std_logic;
+    -- Funcion paleta de falsos colores
+    -- Entrada: indice NGRDI signed 8 bits
+    -- Salida:  R,G,B de 4 bits cada uno
+    -- Empaquetado de salida: G6R5B5 igual que cam_capture
+    --   usamos solo 4 MSB de cada canal para VGA
+    procedure apply_palette(
+        signal idx  : in  std_logic_vector(7 downto 0);
+        signal r_out: out std_logic_vector(3 downto 0);
+        signal g_out: out std_logic_vector(3 downto 0);
+        signal b_out: out std_logic_vector(3 downto 0)
+    ) is
+        variable i : signed(7 downto 0);
+    begin
+        i := signed(idx);
+        if i >= 20 then		  
+            -- Verde intenso
+            r_out <= "0000";
+            g_out <= "1111";
+            b_out <= "0000";
+        elsif i >= 5 then
+            -- Verde claro
+            r_out <= "0010";
+            g_out <= "1100";
+            b_out <= "0000";
+        elsif i >= -5 then
+            -- Amarillo
+            r_out <= "1111";
+            g_out <= "1111";
+            b_out <= "0000";
+        elsif i >= -20 then
+            -- Naranja
+            r_out <= "1111";
+            g_out <= "0110";
+            b_out <= "0000";
+        else
+            -- Rojo
+            r_out <= "1111";
+            g_out <= "0000";
+            b_out <= "0000";
+        end if;
+    end procedure;
 
-    -- Coordenadas en framebuffer (registradas para timing limpio)
-    signal fb_x      : integer range 0 to FB_W-1 := 0;
-    signal fb_y      : integer range 0 to FB_H-1 := 0;
-    signal addr_int  : unsigned(14 downto 0);
-
-begin
+begin		  
 
     -- -------------------------------------------------------------------------
     -- Contadores h/v
@@ -84,29 +143,34 @@ begin
     vga_vs <= '0' when (v_cnt >= V_DISP + V_FP) and
                        (v_cnt <  V_DISP + V_FP + V_SYNC) else '1';
 
+
     -- -------------------------------------------------------------------------
     -- Zona visible
     -- -------------------------------------------------------------------------
     visible <= '1' when (h_cnt < H_DISP) and (v_cnt < V_DISP) else '0';
 
     -- -------------------------------------------------------------------------
-    -- Mapeo 640x480 -> 160x120  (escala exacta 4x en ambas dimensiones)
-    -- Se clampea a FB_W-1 / FB_H-1 para evitar lecturas fuera de rango
+    -- Mapeo de coordenadas + deteccion de mitad
+    -- Izquierda: h_cnt 0..319   → fb_x = h_cnt / 2
+    -- Derecha:   h_cnt 320..639 → fb_x = (h_cnt - 320) / 2
+    -- Vertical:  v_cnt 0..479   → fb_y = v_cnt / 4
     -- -------------------------------------------------------------------------
     process(clk_25)
         variable fx : integer range 0 to FB_W-1;
         variable fy : integer range 0 to FB_H-1;
     begin
         if rising_edge(clk_25) then
-            -- Horizontal: h_cnt / 4, clampear a 159
-            if h_cnt < H_DISP then
-                fx := h_cnt / 4;
-                if fx > FB_W-1 then fx := FB_W-1; end if;
+            -- Horizontal
+            if h_cnt < HALF_H then
+                fx         := h_cnt / 2;
+                right_half <= '0';
             else
-                fx := 0;
+                fx         := (h_cnt - HALF_H) / 2;
+                right_half <= '1';
             end if;
+            if fx > FB_W-1 then fx := FB_W-1; end if;
 
-            -- Vertical: v_cnt / 4, clampear a 119
+            -- Vertical
             if v_cnt < V_DISP then
                 fy := v_cnt / 4;
                 if fy > FB_H-1 then fy := FB_H-1; end if;
@@ -120,38 +184,63 @@ begin
     end process;
 
     -- -------------------------------------------------------------------------
-    -- Direccion al frame buffer (combinacional desde fb_x/fb_y registrados)
+    -- Direccion a ambos framebuffers (misma addr, distinto banco)
     -- -------------------------------------------------------------------------
-    addr_int <= to_unsigned(fb_y * FB_W + fb_x, 15);
-    fb_addr  <= std_logic_vector(addr_int);
+    addr_int      <= to_unsigned(fb_y * FB_W + fb_x, 15);
+    fb_addr       <= std_logic_vector(addr_int);
+    fb_ngrdi_addr <= std_logic_vector(addr_int);
 
     -- -------------------------------------------------------------------------
-    -- Pipeline visible: 2 ciclos de latencia total
-    --   Ciclo 1: se registran fb_x/fb_y y se calcula addr
-    --   Ciclo 2: BRAM entrega dato
+    -- Pipeline de control: 2 ciclos de latencia (registro coord + BRAM)
     -- -------------------------------------------------------------------------
     process(clk_25)
     begin
         if rising_edge(clk_25) then
-            visible_d <= visible;
+            -- Ciclo 1: alinear con registro de coordenadas
+            visible_d    <= visible;
+            right_half_d <= right_half;
+            -- Ciclo 2: alinear con salida BRAM
+            visible_d2    <= visible_d;
+            right_half_d2 <= right_half_d;
         end if;
     end process;
+
+    -- -------------------------------------------------------------------------
+    -- Salida RGB
+    -- Izquierda: fb_data en empaquetado G6R5B5
+    -- Derecha:   paleta aplicada al indice NGRDI de 8 bits
+    -- Linea divisoria: 2 pixeles blancos cuando right_half cambia
+    -- -------------------------------------------------------------------------
+    process(clk_25)
+        variable i : signed(7 downto 0);
+    begin
+        if rising_edge(clk_25) then
+            if visible_d2 = '0' then
+                vga_r <= (others => '0');
+                vga_g <= (others => '0');
+                vga_b <= (others => '0');
+            elsif right_half_d2 = '0' then
+                -- Mitad izquierda: imagen normal G6R5B5
+                vga_g <= fb_data(15 downto 12);
+                vga_r <= fb_data(9  downto 6);
+                vga_b <= fb_data(4  downto 1);
+            else
+                -- Mitad derecha: paleta de falsos colores
+                i := signed(fb_ngrdi_data);
+                if i >= 20 then
+                    vga_r <= "0000"; vga_g <= "1111"; vga_b <= "0000";
+                elsif i >= 5 then
+                    vga_r <= "0010"; vga_g <= "1100"; vga_b <= "0000";
+                elsif i >= -5 then
+                    vga_r <= "1111"; vga_g <= "1111"; vga_b <= "0000";
+                elsif i >= -20 then
+                    vga_r <= "1111"; vga_g <= "0110"; vga_b <= "0000";
+                else
+                    vga_r <= "1111"; vga_g <= "0000"; vga_b <= "0000";
+                end if;
+            end if;
+        end if;
+    end process;
+
+end rtl;
 	 
-    -- -------------------------------------------------------------------------
-    -- Salida RGB565 -> 4 bits por canal
-    -- RGB565: [15:11]=R5  [10:5]=G6  [4:0]=B5
-    -- -------------------------------------------------------------------------
-
-	--vga_r <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
-   --vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
-	--vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
-	
-	--vga_r <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0'); 
-   --vga_g <= fb_data(10 downto 7)  when visible_d = '1' else (others => '0');
-	--vga_b <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
-	
-	vga_r <= fb_data(9  downto 6)  when visible_d = '1' else (others => '0');
-vga_g <= fb_data(15 downto 12) when visible_d = '1' else (others => '0');
-vga_b <= fb_data(4  downto 1)  when visible_d = '1' else (others => '0');
-
-end rtl;	 
